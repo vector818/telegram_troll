@@ -1,0 +1,9 @@
+.env
+!example.env
+*.log
+*.json
+*.txt
+!system_prompts/*.txt
+__pycache__
+*.session
+*.session-journal
