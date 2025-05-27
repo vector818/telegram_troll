@@ -1,6 +1,7 @@
 import os
 import time
 import logging
+import random
 from pathlib import Path
 from dotenv import load_dotenv
 from pyrogram import Client
@@ -96,13 +97,49 @@ class Chat:
 			last_msg = next(history_iter)
 		except StopIteration:
 			return False
-		return last_msg.outgoing
+		outgoing = last_msg.outgoing
+		result = False if not outgoing or last_msg.text[:5] == 'user:' else True
+		return result
+	
+	def simulate_typing(self, message: str, wpm: int = 100, sigma: float = 0.3, min_delay: float = 0.5, max_delay: float = 3.0) -> None:
+		"""
+		Symuluje wpisywanie każego słowa osobno z czasem wygenerowanym z rozkładu normalnego.
+		- wpm: średnia liczba słów na minutę (np. 40)
+		- sigma: odchylenie standardowe w sekundach
+		- min_delay, max_delay: ograniczenia czasów dla pojedynczego słowa
+		"""
+		# Oblicz średni czas na słowo
+		avg_word_time = 60.0 / wpm  # sekundy na słowo
+		words = message.split()
+		total_delay = 0.0
+		for word in words:
+			if len(word) < 2:
+				continue
+			# losuj delay = N(avg_word_time, sigma)
+			delay = random.gauss(avg_word_time, sigma)
+			delay = max(min_delay, min(max_delay, delay))
+			total_delay += delay
+		logger.info(f"Symulowane opóźnienie: {total_delay:.2f} sekundy")
+		time.sleep(total_delay)
 
 	def send_message(self, message: str) -> None:
 		"""
 		Wysyła wiadomość do czatu i synchronizuje historię.
 		"""
-		self.client.send_message(self.id, message)
+		sent_message = self.client.send_message(self.id, message)
+		self.last_synced = sent_message.id
+		self._save_last_synced_id()
+		logger.info(f"Wysłano wiadomość o id {sent_message.id} do {self.title} (ID: {self.id})")
+
+	def send_message_human(self, text: str) -> None:
+		"""
+		Symuluje wpisywanie i wysyła wiadomość do chatu.
+		"""
+		self.simulate_typing(text)
+		sent_message = self.client.send_message(self.id, text)
+		self.last_synced = sent_message.id
+		self._save_last_synced_id()
+		logger.info(f"Wysłano wiadomość o id {sent_message.id} do {self.title} (ID: {self.id})")
 
 	def sync_history(self) -> None:
 		"""
@@ -111,14 +148,14 @@ class Chat:
 		"""
 		# Pobierz historię (od najnowszych)
 		new_msgs = []
-		for msg in self.client.get_chat_history(self.id):
+		for msg in self.client.get_chat_history(self.id, limit=20):
 			if msg.id <= self.last_synced:
 				break
 			new_msgs.append(msg)
 		# Dodaj w kolejności chronologicznej
 		for msg in reversed(new_msgs):
-			role = "assistant" if msg.outgoing else "user"
 			content = msg.text or msg.caption or None
+			role = "user" if not msg.outgoing or content[:5] == 'user:' else "assistant"
 			if content:
 				if role == "user":
 					self.ai.add_user_message(content)
@@ -179,6 +216,8 @@ if __name__ == "__main__":
 		ingored_chats = [777000,1354558262]
 		chats: list[Chat] = manager.get_chats(ignored_chats=ingored_chats)
 		logger.info(f"Znaleziono {len(chats)} czatów:")
+		for chat in chats:
+			logger.info(f" - {chat.title} (ID: {chat.id})")
 		while True:
 			try:
 				for chat in chats:
@@ -188,18 +227,20 @@ if __name__ == "__main__":
 					last_outgoing = chat.last_outgoing()
 					if not last_outgoing:
 						# Pobierz wiadomość od AI
-						logger.info(f" - {chat.title} (ID: {chat.id}) - last_synced: {chat.last_synced}")
+						logger.info(f"Nadeszła nowa wiadomość w czacie {chat.title} (ID: {chat.id}) - last_synced: {chat.last_synced}")
+						logger.info("Przystępuję do generowania odpowiedzi...")
 						wiadomosc = chat.ai.get_response()
-						chat.send_message(wiadomosc)
-						logger.info(f"Wysłano wiadomość do {chat.title} (ID: {chat.id})")
+						chat.send_message_human(wiadomosc)
 				time.sleep(5)  # Opóźnienie między iteracjami, aby nie przeciążać API
 			except KeyboardInterrupt:
 				logger.info("Przerwano przez użytkownika.")
-				break
-			except Exception as e:
-				logger.error(f"Błąd: {e}", exc_info=True)
-			finally:
 				for chat in chats:
 					# Synchronizacja historii z AI
 					chat.sync_history()
-					#logger.info(f" - {chat.title} (ID: {chat.id}) - last_synced: {chat.last_synced}")
+				break
+			except Exception as e:
+				logger.error(f"Błąd: {e}", exc_info=True)
+				for chat in chats:
+					# Synchronizacja historii z AI
+					chat.sync_history()
+				raise e

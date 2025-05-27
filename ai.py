@@ -30,7 +30,7 @@ class AIConversationManager:
 			f"chat_{self.chat_id}_history.json"
 		)
 
-		# Wczytaj system prompt
+		# Ustaw system prompt i ewentualny plik źródłowy
 		default_prompt = "Jesteś pomocnym asystentem AI."
 		if system_prompt:
 			self.system_prompt = system_prompt
@@ -39,6 +39,7 @@ class AIConversationManager:
 				self.system_prompt = f.read().strip()
 		else:
 			self.system_prompt = default_prompt
+		self.system_prompt_file = system_prompt_file
 
 		# Załaduj lub zainicjalizuj historię
 		self.messages: List[Dict[str, str]] = []
@@ -46,18 +47,52 @@ class AIConversationManager:
 
 	def load_history(self) -> None:
 		"""
-		Wczytuje historię z pliku, jeśli istnieje; w przeciwnym wypadku inicjalizuje od system prompt.
+		Wczytuje historię z pliku, jeśli istnieje; zawsze dba o to,
+		żeby pierwsza wiadomość była system promptem i była aktualna.
 		"""
 		if os.path.exists(self.history_file):
 			with open(self.history_file, 'r', encoding='utf-8') as f:
 				data = json.load(f)
 				self.model = data.get("model", self.model)
-				self.system_prompt = data.get("system_prompt", self.system_prompt)
+				# Nadpisz system prompt z pliku historii, ale zachowaj aktualny wartość
+				file_prompt = data.get("system_prompt", self.system_prompt)
+				# Jeśli zmienił się prompt plikowy, użyj tego z parametrów konstrukcji
+				self.system_prompt = self.system_prompt or file_prompt
 				self.messages = data.get("messages", [])
-		# Upewnij się, że pierwsza wiadomość to system prompt
-		if not self.messages or self.messages[0]["role"] != "system":
+		# Upewnij się, że pierwsza wiadomość to zawsze aktualny system prompt
+		if self.messages and self.messages[0].get("role") == "system":
+			self.messages[0]["content"] = self.system_prompt
+		else:
 			self.messages.insert(0, {"role": "system", "content": self.system_prompt})
 
+	def add_system_message(self, content: str) -> None:
+		"""Aktualizuje system prompt w historii"""
+		# Zaktualizuj atrybut i pierwszą wiadomość w historii
+		self.system_prompt = content
+		if self.messages and self.messages[0].get("role") == "system":
+			self.messages[0]["content"] = content
+		else:
+			self.messages.insert(0, {"role": "system", "content": content})
+
+	def update_system_prompt(self, new_prompt: str, save: bool = False) -> None:
+		"""
+		Ustawia nowy system prompt i aktualizuje historię.
+		Jeśli save=True, od razu zapisuje historię.
+		"""
+		self.add_system_message(new_prompt)
+		if save:
+			self.save_history()
+
+	def update_system_prompt_from_file(self, file_path: str, save: bool = False) -> None:
+		"""
+		Wczytuje system prompt z pliku i aktualizuje historię.
+		"""
+		if not os.path.exists(file_path):
+			raise FileNotFoundError(f"Brak pliku: {file_path}")
+		with open(file_path, 'r', encoding='utf-8') as f:
+			prompt = f.read().strip()
+		self.update_system_prompt(prompt, save=save)
+	
 	def save_history(self) -> None:
 		"""
 		Zapisuje historię rozmowy do pliku JSON wraz z metadanymi.
@@ -83,7 +118,7 @@ class AIConversationManager:
 		"""Dodaje do historii wiadomość od systemu"""
 		self.messages.append({"role": "system", "content": content})
 
-	def get_response(self, user_message: str = None) -> str:
+	def get_response(self, user_message: str = None, save_history: bool = True) -> str:
 		"""
 		Dodaje wiadomość użytkownika (lub nie), wysyła żądanie do OpenAI i zwraca odpowiedź.
 		"""
@@ -94,8 +129,12 @@ class AIConversationManager:
 			messages=self.messages
 		)
 		ai_content = response.choices[0].message.content
-		self.add_ai_message(ai_content)
-		self.save_history()
+		if save_history:
+			self.add_ai_message(ai_content)
+			self.save_history()
+		elif user_message:
+			# Jeśli nie zapisujemy historii a w wejśćiu funkcji była jakaś wiadomość to usuwamy ostatnią wiadomość
+			self.messages.pop()
 		return ai_content
 
 	def reset_conversation(self) -> None:
@@ -104,33 +143,29 @@ class AIConversationManager:
 
 
 if __name__ == "__main__":
-	
-	
 	# Załaduj klucz API z pliku .env
-	load_dotenv()
 	api_key = os.getenv("OPENAI_API_KEY")
-	
 	if not api_key:
-		print("Nie znaleziono klucza API. Ustaw OPENAI_API_KEY w pliku .env lub w zmiennych środowiskowych.")
+		print("Nie znaleziono klucza API. Ustaw OPENAI_API_KEY w pliku .env.")
 		exit(1)
-	current_dir = os.path.dirname(os.path.abspath(__file__))
-	system_prompt_file = os.path.join(current_dir, "system_prompts", "telegram_troll.txt")
-	# Inicjalizuj menedżera konwersacji
-	conversation = AIConversationManager(api_key,system_prompt_file=system_prompt_file)
-	
-	# Przykładowa interaktywna sesja
-	print("Witaj! Rozpoczynamy rozmowę z AI. Wpisz 'quit' aby zakończyć.")
-	
+	# Inicjalizacja menedżera konwersacji
+	chat_id = input("Podaj chat_id (użyj liczby dla identyfikatora rozmowy): ")
+	try:
+		chat_id = int(chat_id)
+	except ValueError:
+		print("Nieprawidłowy chat_id. Użyj liczby.")
+		exit(1)
+	cm = AIConversationManager(
+		api_key=api_key,
+		chat_id=chat_id,
+		history_dir="history",
+		system_prompt_file="system_prompts/telegram_troll.txt"
+	)
+	print("Rozpoczynam interaktywną rozmowę. Wpisz 'exit' aby zakończyć.")
 	while True:
 		user_input = input("Ty: ")
-		if user_input.lower() in ["quit", "exit", "koniec", "q"]:
+		if user_input.lower() in ("exit", "quit"):
+			print("Koniec rozmowy.")
 			break
-		
-		try:
-			response = conversation.add_message_and_get_response(user_input)
-			print(f"AI: {response}")
-		except Exception as e:
-			print(f"Błąd: {e}")
-			print(f"Historia rozmowy została zapisana w pliku {conversation.history_file}")
-	
-	print(f"Koniec rozmowy. Historia została zapisana w pliku {conversation.history_file}")
+		response = cm.get_response(user_input, save_history=False)
+		print(f"Bot: {response}\n")
