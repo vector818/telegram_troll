@@ -3,6 +3,7 @@
 *.log
 *.json
 *.txt
+!requirements.txt
 !system_prompts/*.txt
 __pycache__
 *.session
