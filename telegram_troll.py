@@ -198,23 +198,28 @@ async def process_existing_chats(client: Client, max_messages: int = 50, max_day
             
             cm = conversations[chat_id]
             
+            # Zbierz zawartość wszystkich wiadomości
+            message_contents = []
             for message in messages:
                 content = message.text or message.caption or ""
-                if not content:
-                    continue
-                    
-                short_content = content
-                if len(content) > 40:
-                    short_content = content[:20] + " ... " + content[-20:]
-                logger.info(f"Processing existing message in chat {chat_id}: {short_content}")
-                
+                if content:
+                    message_contents.append(content)
+            
+            if len(message_contents) == 1:
+                # Jeśli jest tylko jedna wiadomość, odpowiedz bezpośrednio
+                content = message_contents[0]
+                short_content = content[:20] + " ... " + content[-20:] if len(content) > 40 else content
+                logger.info(f"Processing single message in chat {chat_id}: {short_content}")
                 response = await cm.get_response(content)
-                await simulate_typing(chat_id, response, client)
-                await client.send_message(chat_id, response)
-                
-                # Odczekaj chwilę między wiadomościami aby nie przekroczyć limitów API
-                await asyncio.sleep(1)
-                
+            else:
+                # Jeśli jest wiele wiadomości, połącz je dla kontekstu
+                combined = "\n".join([f"[Message {i+1}]: {m}" for i, m in enumerate(message_contents)])
+                logger.info(f"Processing {len(message_contents)} accumulated messages in chat {chat_id}")
+                response = await cm.get_response(combined)
+            
+            # Symuluj pisanie i wyślij odpowiedź
+            await simulate_typing(chat_id, response, client)
+            await client.send_message(chat_id, response)
         else:
             logger.info(f"No unprocessed messages in chat {chat_id}")
     
