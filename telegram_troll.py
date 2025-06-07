@@ -4,6 +4,8 @@ import datetime
 import asyncio
 import random
 import logging
+import time
+from collections import defaultdict
 from typing import Optional, List, Dict
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -23,6 +25,8 @@ TELEGRAM_API_ID = os.getenv("TELEGRAM_API_ID")
 TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 HISTORY_DIR = "history"
+pending_responses = {}
+message_queue = defaultdict(list)
 
 # Validate env vars
 if not (TELEGRAM_API_ID and TELEGRAM_API_HASH and OPENAI_API_KEY):
@@ -158,6 +162,8 @@ async def process_existing_chats(client: Client, max_messages: int = 50, max_day
         # Pobierz ostatnie wiadomości
         messages = []
         async for message in client.get_chat_history(chat_id, limit=max_messages):
+            is_forwarded = message.forward_from is not None
+            is_forwarded_self = message.forward_from.is_self if is_forwarded else False
             # Pomiń wiadomości wychodzące (wysłane przez nas)
             if message.outgoing:
                 break  # Zatrzymaj pobieranie - znaleziono naszą odpowiedź
@@ -168,6 +174,10 @@ async def process_existing_chats(client: Client, max_messages: int = 50, max_day
                 
             # Pomiń zbyt stare wiadomości
             if message.date and message.date < time_threshold:
+                continue
+
+            #Pomiń wiadomości nasze wiadomości wysłane jako forwarded
+            if is_forwarded_self:
                 continue
                 
             messages.append(message)
@@ -207,6 +217,52 @@ async def process_existing_chats(client: Client, max_messages: int = 50, max_day
                 
         else:
             logger.info(f"No unprocessed messages in chat {chat_id}")
+    
+async def delayed_response(client: Client, chat_id: int, delay: float):
+    """
+    Wait for the specified delay, then respond to all accumulated messages
+    """
+    try:
+        # Wait for the specified delay
+        await asyncio.sleep(delay)
+        
+        # Check if we have any messages to respond to
+        if not message_queue[chat_id]:
+            logger.info(f"No messages left to respond to in chat {chat_id}")
+            return
+            
+        # Initialize conversation manager if needed
+        if chat_id not in conversations:
+            conversations[chat_id] = AIConversationManager(
+                api_key=OPENAI_API_KEY,
+                chat_id=chat_id,
+                history_dir=HISTORY_DIR,
+                system_prompt_file="system_prompts/telegram_troll.txt"
+            )
+        cm = conversations[chat_id]
+        
+        # Get all messages since our last response
+        messages = message_queue[chat_id]
+        message_queue[chat_id] = []  # Clear the queue
+        
+        if len(messages) == 1:
+            # If there's only one message, just respond to it directly
+            content = messages[0]['content']
+            response = await cm.get_response(content)
+        else:
+            # If there are multiple messages, combine them for context
+            combined = "\n".join([f"[Message {i+1}]: {m['content']}" for i, m in enumerate(messages)])
+            logger.info(f"Responding to {len(messages)} accumulated messages in chat {chat_id}")
+            
+            # Get a response considering all messages
+            response = await cm.get_response(combined)
+        
+        # Simulate typing and send response
+        await simulate_typing(chat_id, response, client)
+        await client.send_message(chat_id, response)
+        
+    except Exception as e:
+        logger.error(f"Error in delayed_response for chat {chat_id}: {str(e)}")
 
 conversations: Dict[int, AIConversationManager] = {}
 
@@ -225,22 +281,33 @@ async def handle_message(client: Client, message):
         return
     if not content:
         return
+        
     chat_id = message.chat.id
-    if chat_id not in conversations:
-        conversations[chat_id] = AIConversationManager(
-            api_key=OPENAI_API_KEY,
-            chat_id=chat_id,
-            history_dir=HISTORY_DIR,
-            system_prompt_file="system_prompts/telegram_troll.txt"
-        )
-    cm = conversations[chat_id]
-    short_content = content
-    if len(content) > 40:
-        short_content = content[:20] + " ... " + content[-20:]
+    short_content = content[:20] + " ... " + content[-20:] if len(content) > 40 else content
     logger.info(f"Received message in chat {chat_id}: {short_content}")
-    response = await cm.get_response(content)
-    await simulate_typing(chat_id, response, client)
-    await client.send_message(chat_id, response)
+    
+    # Add message to queue
+    message_queue[chat_id].append({
+        'content': content,
+        'time': time.time(),
+        'message_id': message.id
+    })
+    
+    # If there's no pending response for this chat, schedule one
+    if chat_id not in pending_responses:
+        # Calculate random delay (mean: 5 minutes, std dev: 3 minutes)
+        delay = random.gauss(300, 180)  # 300 seconds = 5 minutes
+        delay = max(30, min(900, delay))  # Clamp between 30 seconds and 15 minutes
+        #delay = 0  # For testing, set to 0 for immediate response
+
+        logger.info(f"Scheduling response for chat {chat_id} in {delay:.1f} seconds")
+        
+        # Create and store the task
+        task = asyncio.create_task(delayed_response(client, chat_id, delay))
+        pending_responses[chat_id] = task
+        
+        # Cleanup when done
+        task.add_done_callback(lambda t: pending_responses.pop(chat_id, None))
 
 if __name__ == "__main__":
     logger.info("Starting Telegram Async Manager...")
