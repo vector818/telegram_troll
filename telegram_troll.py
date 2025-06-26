@@ -165,7 +165,7 @@ async def process_existing_chats(client: Client, max_messages: int = 50, max_day
             is_forwarded = message.forward_from is not None
             is_forwarded_self = message.forward_from.is_self if is_forwarded else False
             # Pomiń wiadomości wychodzące (wysłane przez nas)
-            if message.outgoing:
+            if message.outgoing and not message.text.lower().startswith("user:"):
                 break  # Zatrzymaj pobieranie - znaleziono naszą odpowiedź
             
             # Pomiń wiadomości bez tekstu
