@@ -1,4 +1,6 @@
 .env
+.venv/
+.vscode/
 !example.env
 *.log
 *.json
