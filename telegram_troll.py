@@ -153,7 +153,7 @@ async def process_existing_chats(client: Client, max_messages: int = 50, max_day
     
     # Pobierz wszystkie dialogi (czaty)
     async for dialog in client.get_dialogs():
-        if not dialog.chat.type.name == "PRIVATE" or dialog.chat.id == 777000:
+        if not dialog.chat.type.name == "PRIVATE" or (dialog.chat.id in [777000,178220800]):
             continue
         
         chat_id = dialog.chat.id
