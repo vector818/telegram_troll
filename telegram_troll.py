@@ -195,6 +195,7 @@ async def process_existing_chats(client: Client, max_messages: int = 50, max_day
                     history_dir=HISTORY_DIR,
                     system_prompt_file="system_prompts/telegram_troll.txt"
                 )
+                logger.info(f"Initialized conversation manager for chat {chat_id} with system prompt {conversations[chat_id].system_prompt}")
             
             cm = conversations[chat_id]
             
@@ -244,6 +245,7 @@ async def delayed_response(client: Client, chat_id: int, delay: float):
                 history_dir=HISTORY_DIR,
                 system_prompt_file="system_prompts/telegram_troll.txt"
             )
+            logger.info(f"Initialized conversation manager for chat {chat_id} with system prompt {conversations[chat_id].system_prompt}")
         cm = conversations[chat_id]
         
         # Get all messages since our last response
