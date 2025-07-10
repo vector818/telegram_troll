@@ -27,6 +27,21 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 HISTORY_DIR = "history"
 pending_responses = {}
 message_queue = defaultdict(list)
+# Parse ignored chat IDs from environment variable
+IGNORED_CHAT_IDS = []
+ignored_chats_str = os.getenv("IGNORED_CHAT_IDS", None)
+if ignored_chats_str:
+    try:
+        # Parse comma-separated list of chat IDs
+        IGNORED_CHAT_IDS = [int(chat_id.strip()) for chat_id in ignored_chats_str.split(",")]
+        logger.info(f"Ignoring chats with IDs: {IGNORED_CHAT_IDS}")
+    except ValueError:
+        logger.error("Invalid format for IGNORED_CHAT_IDS in .env file. Use comma-separated integers.")
+
+# Default system ignored chats
+SYSTEM_IGNORED_CHATS = [777000, 178220800]  # Telegram service account, etc.
+ALL_IGNORED_CHATS = SYSTEM_IGNORED_CHATS + IGNORED_CHAT_IDS
+
 
 # Validate env vars
 if not (TELEGRAM_API_ID and TELEGRAM_API_HASH and OPENAI_API_KEY):
@@ -153,7 +168,7 @@ async def process_existing_chats(client: Client, max_messages: int = 50, max_day
     
     # Pobierz wszystkie dialogi (czaty)
     async for dialog in client.get_dialogs():
-        if not dialog.chat.type.name == "PRIVATE" or (dialog.chat.id in [777000,178220800]):
+        if not dialog.chat.type.name == "PRIVATE" or (dialog.chat.id in ALL_IGNORED_CHATS):
             continue
         
         chat_id = dialog.chat.id
@@ -164,6 +179,8 @@ async def process_existing_chats(client: Client, max_messages: int = 50, max_day
         async for message in client.get_chat_history(chat_id, limit=max_messages):
             is_forwarded = message.forward_from is not None
             is_forwarded_self = message.forward_from.is_self if is_forwarded else False
+            if message.text is None:
+                continue
             # Pomiń wiadomości wychodzące (wysłane przez nas)
             if message.outgoing and not message.text.lower().startswith("user:"):
                 break  # Zatrzymaj pobieranie - znaleziono naszą odpowiedź
@@ -279,6 +296,9 @@ conversations: Dict[int, AIConversationManager] = {}
     | (filters.private & filters.outgoing & filters.regex(r'(?i)^user:'))
 )
 async def handle_message(client: Client, message):
+    # Skip ignored chats
+    if message.chat.id in ALL_IGNORED_CHATS:
+        return
     raw = message.text or message.caption or ""
     if message.outgoing and raw.lower().startswith("user:"):
         content = raw[len("user:"):].strip()
