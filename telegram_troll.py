@@ -34,13 +34,13 @@ if ignored_chats_str:
     try:
         # Parse comma-separated list of chat IDs
         IGNORED_CHAT_IDS = [int(chat_id.strip()) for chat_id in ignored_chats_str.split(",")]
-        logger.info(f"Ignoring chats with IDs: {IGNORED_CHAT_IDS}")
     except ValueError:
         logger.error("Invalid format for IGNORED_CHAT_IDS in .env file. Use comma-separated integers.")
 
 # Default system ignored chats
 SYSTEM_IGNORED_CHATS = [777000, 178220800]  # Telegram service account, etc.
 ALL_IGNORED_CHATS = SYSTEM_IGNORED_CHATS + IGNORED_CHAT_IDS
+logger.info(f"Ignoring chats with IDs: {ALL_IGNORED_CHATS}")
 
 
 # Validate env vars
