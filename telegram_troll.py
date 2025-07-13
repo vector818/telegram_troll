@@ -6,7 +6,7 @@ import random
 import logging
 import time
 from collections import defaultdict
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Tuple
 from openai import OpenAI
 from dotenv import load_dotenv
 from pyrogram import Client, filters, idle
@@ -134,6 +134,34 @@ class AIConversationManager:
             if user_message:
                 self.messages.pop()
         return ai_content
+    
+    def sync_history_from_telegram(self, telegram_messages: List) -> None:
+        """
+        Synchronize conversation history from Telegram messages.
+        Each outgoing message is 'assistant', unless it starts with 'user:' (then it's 'user').
+        Each incoming message is 'user'.
+        """
+        synced_messages = []
+        # Always start with the system prompt
+        synced_messages.append({"role": "system", "content": self.system_prompt})
+
+        for msg in telegram_messages:
+            # Determine direction and content
+            is_outgoing = getattr(msg, "outgoing", False)
+            text = getattr(msg, "text", None) or getattr(msg, "caption", "")
+            if not text:
+                continue
+
+            if is_outgoing:
+                if text.lower().startswith("user:"):
+                    synced_messages.append({"role": "user", "content": text[len("user:"):].strip()})
+                else:
+                    synced_messages.append({"role": "assistant", "content": text})
+            else:
+                synced_messages.append({"role": "user", "content": text})
+
+        self.messages = synced_messages
+        self._save_history()
 
 async def simulate_typing(chat_id: int, text: str, client: Client, wpm: int = 100000, sigma: float = 0.3, min_delay: float = 0, max_delay: float = 3.0) -> None:
     """
@@ -157,14 +185,29 @@ app = Client(
     api_hash=TELEGRAM_API_HASH
 )
 
+async def fetch_telegram_messages(client: Client, chat_id: int, days_limit: int = 7, limit: int = 100) -> Tuple[List, bool]:
+    messages = []
+    async for msg in client.get_chat_history(chat_id, limit=limit):
+        #oblicz ile dni temu wiadomość została wysłana
+        day_age = (datetime.datetime.now() - msg.date).total_seconds() / (24 * 3600) if msg.date else float('inf')
+        if day_age > days_limit:
+            break
+        if not msg.text:
+            continue
+        messages.append(msg)
+    # Odwróć kolejność, by mieć od najstarszej do najnowszej
+    messages.reverse()
+    if messages and (messages[-1].outgoing and not messages[-1].text.lower().startswith("user:")):
+        last_outgoing = True
+    else:
+        last_outgoing = False
+    return messages, last_outgoing
+
 async def process_existing_chats(client: Client, max_messages: int = 50, max_days_back: int = 14):
     """
     Przejdź przez istniejące czaty i odpowiedz na nieodpowiedziane wiadomości
     """
     logger.info("Processing existing chats...")
-    
-    # Ustaw limit czasu dla wiadomości (nie odpowiadaj na zbyt stare)
-    time_threshold = datetime.datetime.now() - datetime.timedelta(days=max_days_back)
     
     # Pobierz wszystkie dialogi (czaty)
     async for dialog in client.get_dialogs():
@@ -174,68 +217,35 @@ async def process_existing_chats(client: Client, max_messages: int = 50, max_day
         chat_id = dialog.chat.id
         logger.info(f"Checking chat with {dialog.chat.first_name} (ID: {chat_id})")
         
-        # Pobierz ostatnie wiadomości
-        messages = []
-        async for message in client.get_chat_history(chat_id, limit=max_messages):
-            is_forwarded = message.forward_from is not None
-            is_forwarded_self = message.forward_from.is_self if is_forwarded else False
-            if message.text is None:
-                continue
-            # Pomiń wiadomości wychodzące (wysłane przez nas)
-            if message.outgoing and not message.text.lower().startswith("user:"):
-                break  # Zatrzymaj pobieranie - znaleziono naszą odpowiedź
-            
-            # Pomiń wiadomości bez tekstu
-            if not (message.text or message.caption):
-                continue
-                
-            # Pomiń zbyt stare wiadomości
-            if message.date and message.date < time_threshold:
-                continue
-
-            #Pomiń wiadomości nasze wiadomości wysłane jako forwarded
-            if is_forwarded_self:
-                continue
-                
-            messages.append(message)
-            
-        # Odwróć kolejność wiadomości (od najstarszej do najnowszej)
-        messages.reverse()
+        # Pobierz wiadomości z fetch_telegram_messages
+        messages, last_outgoing = await fetch_telegram_messages(client, chat_id, limit=max_messages, days_limit=max_days_back)
         
+        if not messages:
+            logger.info(f"No recent messages in chat {chat_id}")
+            continue
+
         # Odpowiedz na nieodpowiedziane wiadomości
-        if messages:
-            # Inicjalizuj manager konwersacji jeśli nie istnieje
-            if chat_id not in conversations:
-                conversations[chat_id] = AIConversationManager(
-                    api_key=OPENAI_API_KEY,
-                    chat_id=chat_id,
-                    history_dir=HISTORY_DIR,
-                    system_prompt_file="system_prompts/telegram_troll.txt"
-                )
-                logger.info(f"Initialized conversation manager for chat {chat_id} with system prompt {conversations[chat_id].system_prompt}")
-            
-            cm = conversations[chat_id]
-            
-            # Zbierz zawartość wszystkich wiadomości
-            message_contents = []
-            for message in messages:
-                content = message.text or message.caption or ""
-                if content:
-                    message_contents.append(content)
-            
-            if len(message_contents) == 1:
-                # Jeśli jest tylko jedna wiadomość, odpowiedz bezpośrednio
-                content = message_contents[0]
-                short_content = content[:20] + " ... " + content[-20:] if len(content) > 40 else content
-                logger.info(f"Processing single message in chat {chat_id}: {short_content}")
-                response = await cm.get_response(content)
+        # Inicjalizuj manager konwersacji jeśli nie istnieje
+        if chat_id not in conversations:
+            conversations[chat_id] = AIConversationManager(
+                api_key=OPENAI_API_KEY,
+                chat_id=chat_id,
+                history_dir=HISTORY_DIR,
+                system_prompt_file="system_prompts/telegram_troll.txt"
+            )
+            prompt = conversations[chat_id].system_prompt
+            if len(prompt) > 40:
+                prompt_preview = prompt[:20] + " ... " + prompt[-20:]
             else:
-                # Jeśli jest wiele wiadomości, połącz je dla kontekstu
-                combined = "\n".join([f"[Message {i+1}]: {m}" for i, m in enumerate(message_contents)])
-                logger.info(f"Processing {len(message_contents)} accumulated messages in chat {chat_id}")
-                response = await cm.get_response(combined)
+                prompt_preview = prompt
+            logger.info(f"Initialized conversation manager for chat {chat_id} with system prompt: {prompt_preview}")
             
-            # Symuluj pisanie i wyślij odpowiedź
+        cm = conversations[chat_id]
+
+        cm.sync_history_from_telegram(messages)            
+        
+        if not last_outgoing:
+            response = await cm.get_response()
             await simulate_typing(chat_id, response, client)
             await client.send_message(chat_id, response)
         else:
@@ -262,7 +272,12 @@ async def delayed_response(client: Client, chat_id: int, delay: float):
                 history_dir=HISTORY_DIR,
                 system_prompt_file="system_prompts/telegram_troll.txt"
             )
-            logger.info(f"Initialized conversation manager for chat {chat_id} with system prompt {conversations[chat_id].system_prompt}")
+            prompt = conversations[chat_id].system_prompt
+            if len(prompt) > 40:
+                prompt_preview = prompt[:20] + " ... " + prompt[-20:]
+            else:
+                prompt_preview = prompt
+            logger.info(f"Initialized conversation manager for chat {chat_id} with system prompt: {prompt_preview}")
         cm = conversations[chat_id]
         
         # Get all messages since our last response
