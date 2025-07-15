@@ -348,7 +348,7 @@ async def handle_message(client: Client, message):
         delay = max(30, min(900, delay))  # Clamp between 30 seconds and 15 minutes
         #delay = 0  # For testing, set to 0 for immediate response
 
-        logger.info(f"Scheduling response for chat {chat_id} in {delay:.1f} seconds")
+        logger.info(f"Scheduling response for chat {chat_id} in {delay:.1f} seconds. ETA: {datetime.datetime.now() + datetime.timedelta(seconds=delay)}")
         
         # Create and store the task
         task = asyncio.create_task(delayed_response(client, chat_id, delay))
