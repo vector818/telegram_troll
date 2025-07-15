@@ -152,6 +152,12 @@ class AIConversationManager:
             if not text:
                 continue
 
+            # Przerwij synchronizację, jeśli napotkasz komendę
+            if text.strip() == "command: forgot history":
+                synced_messages = []
+                synced_messages.append({"role": "system", "content": self.system_prompt})
+                continue
+
             if is_outgoing:
                 if text.lower().startswith("user:"):
                     synced_messages.append({"role": "user", "content": text[len("user:"):].strip()})
