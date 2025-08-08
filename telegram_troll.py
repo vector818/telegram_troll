@@ -198,7 +198,7 @@ async def fetch_telegram_messages(client: Client, chat_id: int, days_limit: int 
         day_age = (datetime.datetime.now() - msg.date).total_seconds() / (24 * 3600) if msg.date else float('inf')
         if day_age > days_limit:
             break
-        if not msg.text:
+        if not msg.text and not msg.caption:
             continue
         messages.append(msg)
     # Odwróć kolejność, by mieć od najstarszej do najnowszej
